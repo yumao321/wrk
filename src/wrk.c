@@ -4,6 +4,8 @@
 #include "script.h"
 #include "main.h"
 
+static uint64_t start_thread_time = 0;
+
 static struct config {
     uint64_t connections;
     uint64_t duration;
@@ -15,6 +17,9 @@ static struct config {
     bool     latency;
     char    *host;
     char    *script;
+    char    *name;
+    char    *path;
+    char    *influxdb_addr;
     SSL_CTX *ctx;
 } cfg;
 
@@ -36,6 +41,8 @@ static struct http_parser_settings parser_settings = {
 };
 
 static volatile sig_atomic_t stop = 0;
+
+static s_influxdb_client *influxdb_client;
 
 static void handler(int sig) {
     stop = 1;
@@ -100,6 +107,11 @@ int main(int argc, char **argv) {
     }
 
     cfg.host = host;
+
+    pthread_t report_thread;
+    pthread_create(&report_thread, NULL, report_latency, 0);
+    start_thread_time = time_us();
+    statistics.requests->start = start_thread_time / 1000 / 1000;
 
     for (uint64_t i = 0; i < cfg.threads; i++) {
         thread *t      = &threads[i];
@@ -196,7 +208,47 @@ int main(int argc, char **argv) {
         script_done(L, statistics.latency, statistics.requests);
     }
 
+    if (influxdb_client) {
+      influx_free(influxdb_client);
+    }
+
     return 0;
+}
+
+static int influx_create(char *influxdb_addr, char *uname, char *password, char *dbname, int ssl) {
+    influxdb_client = influxdb_client_new(influxdb_addr, uname, password, dbname, ssl);
+    return 1;
+}
+static int influx_insert(s_influxdb_client *client, char *query) {
+    int status = influxdb_insert(client, query);
+    return status;
+}
+static int influx_free(s_influxdb_client * client) {
+    influxdb_client_free(client);
+    return 1;
+}
+
+void *report_latency(void *arg) {
+    stats *stats = statistics.requests;
+    if (cfg.influxdb_addr) {
+        influx_create(cfg.influxdb_addr, "", "", INFLUXDB_DATABASE, 0);
+    }
+    while (!stop) {
+        uint64_t now      = time_us();
+        uint64_t location = stats->location - 1;
+        if (stats->requests[location] > 0 && stats->requests[location] < MAX_QPS_RATE) {
+            uint64_t time = location + stats->start;
+            printf("name: %s, time: %ld, rps: %ld, min: %ld\n", cfg.name, time, stats->requests[location], stats->latency[location] / stats->requests[location]);
+            if (influxdb_client) {
+                char query[100];
+                char time_str[20];
+                sprintf(time_str, "%ld000000000", time);
+                sprintf(query, "%s,type=wrk,path=%s rps=%ld,min=%ld %s", cfg.name, cfg.path, stats->requests[location], stats->latency[location] / stats->requests[location], time_str);
+                influx_insert(influxdb_client, query);
+            }
+        }
+        usleep(1 * 1000 * 1000 - (time_us() - now));
+    }
 }
 
 void *thread_main(void *arg) {
@@ -344,6 +396,8 @@ static int response_complete(http_parser *parser) {
         if (!stats_record(statistics.latency, now - c->start)) {
             thread->errors.timeout++;
         }
+        uint64_t time_interval = (time_us() - start_thread_time) / 1000 / 1000;
+        stats_record_requests_per_sec(statistics.requests, time_interval, now - c->start);
         c->delayed = cfg.delay;
         aeCreateFileEvent(thread->loop, c->fd, AE_WRITABLE, socket_writeable, c);
     }
@@ -489,7 +543,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
     cfg->duration    = 10;
     cfg->timeout     = SOCKET_TIMEOUT_MS;
 
-    while ((c = getopt_long(argc, argv, "t:c:d:s:H:T:Lrv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:d:s:H:T:N:I:P:Lrv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads)) return -1;
@@ -512,6 +566,15 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
             case 'T':
                 if (scan_time(optarg, &cfg->timeout)) return -1;
                 cfg->timeout *= 1000;
+                break;
+            case 'N':
+                cfg->name   = optarg;
+                break;
+            case 'I':
+                cfg->influxdb_addr = optarg;
+                break;
+            case 'P':
+                cfg->path   = optarg;
                 break;
             case 'v':
                 printf("wrk %s [%s] ", VERSION, aeGetApiName());

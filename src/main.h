@@ -24,8 +24,15 @@
 #include "stats.h"
 #include "units.h"
 #include "zmalloc.h"
+#include "influxdb.h"
 
 struct config;
+
+static int influx_create(char *, char *, char *, char *, int);
+static int influx_insert(s_influxdb_client *, char *);
+static int influx_free(s_influxdb_client *);
+
+static void *report_latency(void *);
 
 static void *thread_main(void *);
 static int connect_socket(thread *, connection *);

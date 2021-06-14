@@ -9,14 +9,29 @@
 
 stats *stats_alloc(uint64_t max) {
     uint64_t limit = max + 1;
-    stats *s = zcalloc(sizeof(stats) + sizeof(uint64_t) * limit);
-    s->limit = limit;
-    s->min   = UINT64_MAX;
+    stats *s   = zcalloc(sizeof(stats) + sizeof(uint64_t) * limit);
+    s->requests= zcalloc(sizeof(uint64_t) * limit);
+    s->latency = zcalloc(sizeof(uint64_t) * limit);
+    s->start   = 0;
+    s->location= 0;
+    s->limit   = limit;
+    s->min     = UINT64_MAX;
     return s;
 }
 
 void stats_free(stats *stats) {
+    zfree(stats->requests);
+    zfree(stats->latency);
     zfree(stats);
+}
+
+int stats_record_requests_per_sec(stats *stats, uint64_t sec, uint64_t latency) {
+    __sync_fetch_and_add(&stats->requests[sec], 1);
+    __sync_fetch_and_add(&stats->latency[sec], latency);
+    if (sec > stats->location) {
+        stats->location = sec;
+    }
+    return 1;
 }
 
 int stats_record(stats *stats, uint64_t n) {

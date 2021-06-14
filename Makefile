@@ -1,5 +1,5 @@
 CFLAGS  += -std=c99 -Wall -O2 -D_REENTRANT
-LIBS    := -lm -lssl -lcrypto -lpthread
+LIBS    := -lm -lssl -lcrypto -lpthread -lcurl
 
 TARGET  := $(shell uname -s | tr '[A-Z]' '[a-z]' 2>/dev/null || echo unknown)
 
@@ -17,7 +17,7 @@ else ifeq ($(TARGET), freebsd)
 	LDFLAGS += -Wl,-E
 endif
 
-SRC  := wrk.c net.c ssl.c aprintf.c stats.c script.c units.c \
+SRC  := influxdb.c wrk.c net.c ssl.c aprintf.c stats.c script.c units.c \
 		ae.c zmalloc.c http_parser.c
 BIN  := wrk
 VER  ?= $(shell git describe --tags --always --dirty)
